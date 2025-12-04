@@ -12,8 +12,8 @@ app.use(express.json());
 app.use("/api/employees", employeeRoutes);
 app.use("/api/projects", projectRoutes);
 app.use("/api/departments", departmentsRoutes);
-
 app.use("/api/assets", assetRoutes);
+
 app.use("/api/assignments", assignmentRoutes);
 app.use("/api/audit-logs", auditLogRoutes);
 

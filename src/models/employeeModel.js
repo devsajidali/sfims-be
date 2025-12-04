@@ -93,8 +93,6 @@ export const findAllTeamMembers = async (teamLeadId) => {
 
     return teamMembers; // Return all employees in the department, including the team lead
   } catch (error) {
-
-
     // Rethrow the error with a custom message
     throw new Error(error.message);
   }
@@ -168,18 +166,23 @@ export const processBulkFile = async (file, department_id, project_id) => {
 
 export const create = async (data) => {
   const [result] = await pool.execute(
-    "INSERT INTO employee (name, designation, department, email, contact_number, project_id) VALUES (?, ?, ?, ?, ?, ?)",
+    `INSERT INTO employee 
+      (first_name, last_name, designation, department_id, email, contact_number, project_id) 
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
-      data.name,
+      data.first_name,
+      data.last_name,
       data.designation,
-      data.department,
+      data.department_id,
       data.email,
       data.contact_number,
       data.project_id,
     ]
   );
+
   return { employee_id: result.insertId, ...data };
 };
+
 
 export const update = async (id, data) => {
   await pool.execute(

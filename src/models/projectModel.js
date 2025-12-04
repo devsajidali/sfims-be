@@ -72,7 +72,6 @@ export const update = async (data) => {
 
 export const remove = async (projectId, res) => {
   const { error } = deleteProjectSchema.validate({ project_id: projectId });
-  console.log(error);
   if (error) throw new Error(formatJoiError(error));
   const existing = await findById(projectId);
   if (!existing) {
