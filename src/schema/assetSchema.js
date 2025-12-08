@@ -43,4 +43,5 @@ export const findAllOptionsSchema = Joi.object({
   page: Joi.number().integer().min(1).optional(),
   limit: Joi.number().integer().min(1).optional(),
   search: Joi.string().trim().min(3).allow("").optional(),
+  employee_id: Joi.number().integer().min(1).optional(),
 });

@@ -11,7 +11,7 @@ export const create = async (req, res) => {
 
 export const getAll = async (req, res) => {
   try {
-    const assets = await assetService.getAllAssets(req.body);
+    const assets = await assetService.getAllAssets(req.query);
     res.json(assets);
   } catch (error) {
     res.status(500).json({ error: error.message });

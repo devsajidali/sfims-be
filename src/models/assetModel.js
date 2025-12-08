@@ -61,7 +61,6 @@ export const create = async (data) => {
 // UPDATE ASSET
 export const update = async (data) => {
   const { error } = updateAssetSchema.validate(data);
-  console.log(error);
   if (error) throw new Error(formatJoiError(error));
 
   const existing = await findById(data?.asset_id);
@@ -135,17 +134,23 @@ export const remove = async (assetId, res) => {
 };
 
 // FIND ALL ASSETS
+export const AssetDisabledStatus = Object.freeze({
+  ENABLED: 0,
+  DISABLED: 1,
+});
+
 export const findAll = async (options = {}) => {
   const { error } = findAllOptionsSchema.validate(options);
   if (error) throw new Error(formatJoiError(error));
-
-  const { page, limit, search } = options;
+  const { page, limit, search, employee_id } = options;
   const params = [];
-  let whereClause = "";
+  let whereClauses = [];
 
+  // Search filter
   if (search && search.trim().length >= 3) {
-    whereClause =
-      " WHERE asset_type LIKE ? OR model LIKE ? OR serial_number LIKE ?";
+    whereClauses.push(
+      "(asset_type LIKE ? OR model LIKE ? OR serial_number LIKE ?)"
+    );
     params.push(
       `%${search.trim()}%`,
       `%${search.trim()}%`,
@@ -153,28 +158,54 @@ export const findAll = async (options = {}) => {
     );
   }
 
-  if (page != null && limit != null) {
+  const whereClause =
+    whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
+
+  // Count total
+  let total = null;
+  if (page && limit) {
     const [countRows] = await pool.execute(
-      `SELECT COUNT(*) as cnt FROM asset${whereClause}`,
+      `SELECT COUNT(*) as cnt FROM asset ${whereClause}`,
       params
     );
-    const total = countRows[0].cnt;
-
-    const offset = (page - 1) * limit;
-    const [rows] = await pool.execute(
-      `SELECT * FROM asset ${whereClause} ORDER BY asset_id LIMIT ? OFFSET ?`,
-      [...params, parseInt(limit), parseInt(offset)]
-    );
-
-    return { total_records: total, page, limit, records: rows };
-  } else if (whereClause) {
-    const [rows] = await pool.execute(
-      `SELECT * FROM asset ${whereClause}`,
-      params
-    );
-    return rows;
-  } else {
-    const [rows] = await pool.execute("SELECT * FROM asset ORDER BY asset_id");
-    return rows;
+    total = countRows[0].cnt;
   }
+  // Main query
+  let query = `
+    SELECT
+      a.*${
+        employee_id
+          ? `,
+      CASE
+        WHEN a.quantity <= 0 THEN ${AssetDisabledStatus.DISABLED}
+        WHEN EXISTS (
+          SELECT 1 FROM assignment asg
+          WHERE asg.asset_id = a.asset_id
+            AND asg.status IN ('Assigned','Pending')
+            AND (asg.return_date IS NULL OR asg.return_date > NOW())
+        ) THEN ${AssetDisabledStatus.DISABLED}
+        ELSE ${AssetDisabledStatus.ENABLED}
+      END AS is_disabled`
+          : ""
+      }
+    FROM asset a
+    ${whereClause}
+    ORDER BY a.asset_id
+  `;
+
+  const queryParams = [...params];
+
+  // Pagination
+  if (page && limit) {
+    query += " LIMIT ? OFFSET ?";
+    queryParams.push(parseInt(limit), parseInt((page - 1) * limit));
+  }
+
+  const [rows] = await pool.execute(query, queryParams);
+
+  if (page && limit) {
+    return { total_records: total, page, limit, records: rows };
+  }
+
+  return rows;
 };
