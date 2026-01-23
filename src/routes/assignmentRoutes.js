@@ -3,16 +3,13 @@ import * as assignmentController from "../controllers/assignmentController.js";
 
 const router = express.Router();
 
-router.get("/", assignmentController.getAll);
-router.post("/assign", assignmentController.create);
+router.post("/create", assignmentController.create);
+router.put("/update-status", assignmentController.updateStatusRequest);
+router.put("/issue-assets", assignmentController.approveAssetRequest);
+router.get("/pending", assignmentController.getPendingApprovals);
 
-router.get("/:id", assignmentController.getById);
-router.put("/:id", assignmentController.update);
-router.delete("/:id", assignmentController.remove);
-
-router.get("/:id/approval", assignmentController.getApprovalStatus);
-router.post("/assignment/status", assignmentController.approveAssignment);
-// GET pending approvals for an approver
-router.get("/approval/pending", assignmentController.getPendingApprovals);
+router.get("/all-requests", assignmentController.getAllRequests);
+router.get("/all-pending-approvals", assignmentController.getPendingApprovals);
+router.get("/all-employee-assets", assignmentController.getEmployeeAssets);
 
 export default router;

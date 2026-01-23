@@ -1,127 +1,128 @@
 import pool from "../config/db.js";
 import {
-  createAssignmentSchema,
-  updateAssignmentSchema,
-  deleteAssignmentSchema,
-  pendingApprovalsSchema,
-  updateAssignmentStatusSchema,
-  assignmentStatusSchema,
+  createAssetRequestSchema,
+  approveAssetRequestSchema,
 } from "../schema/assignmentSchema.js";
 import { formatJoiError } from "../utils/helpers.js";
 
 /**
- * Helper function to fetch assignments with full employee and asset details
- */
-const fetchAssignmentWithDetails = async (whereClause = "", params = []) => {
-  const [rows] = await pool.execute(
-    `SELECT 
-       a.assignment_id,
-       a.assignment_date,
-       a.return_date,
-       a.remarks,
-       a.status,
-       e.employee_id,
-       e.full_name AS employee_name,
-       e.designation AS employee_role,
-       IFNULL(JSON_ARRAYAGG(JSON_OBJECT(
-          'asset_id', ast.asset_id,
-          'asset_type', ast.asset_type,
-          'brand', ast.brand,
-          'model', ast.model,
-          'specifications', ast.specifications,
-          'serial_number', ast.serial_number,
-          'purchase_date', ast.purchase_date,
-          'vendor', ast.vendor,
-          'warranty_expiry', ast.warranty_expiry,
-          'status', ast.status,
-          'quantity', ast.quantity
-       )), JSON_ARRAY()) AS assets
-     FROM assignment a
-     JOIN employee e ON a.employee_id = e.employee_id
-     JOIN asset ast ON a.asset_id = ast.asset_id
-     ${whereClause}
-     GROUP BY a.assignment_id, e.employee_id
-    `,
-    params
-  );
-
-  return rows.map((row) => ({
-    assignment_id: row.assignment_id,
-    assignment_date: row.assignment_date,
-    return_date: row.return_date,
-    remarks: row.remarks,
-    status: row.status,
-    employee: {
-      employee_id: row.employee_id,
-      name: row.employee_name,
-      role: row.employee_role,
-    },
-    assets: Array.isArray(row.assets)
-      ? row.assets
-      : JSON.parse(row.assets || "[]"),
-  }));
-};
-
-/**
- * Create a new assignment
+ * CREATE ASSET REQUEST
+ * Employee → TeamLead → IT
+ * Management → IT
  */
 export const create = async (data) => {
-  // Validate input
-  const { error } = createAssignmentSchema.validate(data);
+  const { error } = createAssetRequestSchema.validate(data);
   if (error) throw new Error(formatJoiError(error));
 
+  const { requester_id, asset_id, request_type } = data;
   const connection = await pool.getConnection();
+
   try {
     await connection.beginTransaction();
 
-    // 1️⃣ Check asset availability
-    const [assetRows] = await connection.execute(
-      `SELECT quantity FROM asset WHERE asset_id = ?`,
-      [data.asset_id]
+    // 1️⃣ Employee exists
+    const [empRows] = await connection.execute(
+      "SELECT role FROM employee WHERE employee_id = ?",
+      [requester_id],
     );
+    if (!empRows.length) throw new Error("Employee not found");
 
-    if (assetRows.length === 0) throw new Error("Asset not found");
+    // 2️⃣ Employee validations (only for Employee type)
+    if (request_type === "Employee") {
+      const [team] = await connection.execute(
+        "SELECT * FROM employee_team WHERE employee_id = ?",
+        [requester_id],
+      );
+      if (!team.length) throw new Error("Employee must be assigned to a team");
 
-    const availableQuantity = assetRows[0].quantity;
-    if (availableQuantity <= 0) throw new Error("Asset is out of stock");
+      const [project] = await connection.execute(
+        "SELECT * FROM employee_project WHERE employee_id = ?",
+        [requester_id],
+      );
+      if (!project.length)
+        throw new Error("Employee must be assigned to a project");
 
-    // 2️⃣ Check if employee already has this asset assigned
-    const [existingAssignment] = await connection.execute(
-      `SELECT * FROM assignment 
-       WHERE employee_id = ? AND asset_id = ? AND (return_date IS NULL OR return_date > NOW())`,
-      [data.employee_id, data.asset_id]
+      const [leadRows] = await connection.execute(
+        `SELECT tl.employee_id
+         FROM team_lead tl
+         JOIN employee_team et ON et.team_id = tl.team_id
+         WHERE et.employee_id = ? AND tl.status = 'Active'
+         LIMIT 1`,
+        [requester_id],
+      );
+      if (!leadRows.length)
+        throw new Error("No active Team Lead found for employee");
+    }
+
+    // 3️⃣ Prevent duplicate pending request
+    const [pendingReq] = await connection.execute(
+      `SELECT request_id FROM asset_request
+       WHERE requester_id = ? AND asset_id = ? AND request_status = 'Pending'`,
+      [requester_id, asset_id],
     );
+    if (pendingReq.length)
+      throw new Error("A pending request for this asset already exists");
 
-    if (existingAssignment.length > 0)
-      throw new Error("Employee already has this asset assigned");
+    // 4️⃣ Asset availability (lock row for update)
+    const [asset] = await connection.execute(
+      "SELECT quantity FROM asset WHERE asset_id = ? FOR UPDATE",
+      [asset_id],
+    );
+    if (!asset.length) throw new Error("Asset not found");
+    if (asset[0].quantity <= 0) throw new Error("Asset out of stock");
 
-    // 3️⃣ Insert assignment (always 1 asset per assignment)
+    // 5️⃣ Create asset request
     const [result] = await connection.execute(
-      `INSERT INTO assignment 
-       (employee_id, asset_id, assignment_date, return_date, remarks, status)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        data.employee_id,
-        data.asset_id,
-        data.assignment_date,
-        data.return_date,
-        data.remarks,
-        data.status || "assigned",
-      ]
+      `INSERT INTO asset_request (requester_id, asset_id, request_type)
+       VALUES (?, ?, ?)`,
+      [requester_id, asset_id, request_type],
+    );
+    const requestId = result.insertId;
+
+    // 6️⃣ Team Lead approval (only for Employee requests)
+    if (request_type === "Employee") {
+      const [leadRows] = await connection.execute(
+        `SELECT tl.employee_id
+         FROM team_lead tl
+         JOIN employee_team et ON et.team_id = tl.team_id
+         WHERE et.employee_id = ? AND tl.status = 'Active'
+         LIMIT 1`,
+        [requester_id],
+      );
+
+      await connection.execute(
+        `INSERT INTO asset_request_approval
+         (request_id, approver_id, approval_level)
+         VALUES (?, ?, 'TeamLead')`,
+        [requestId, leadRows[0].employee_id],
+      );
+    }
+
+    // 7️⃣ IT approval (always)
+    const [itRows] = await connection.execute(
+      `SELECT employee_id FROM employee WHERE department_id = 3 LIMIT 1`,
+    );
+    if (!itRows.length) throw new Error("No IT approver found");
+
+    await connection.execute(
+      `INSERT INTO asset_request_approval
+       (request_id, approver_id, approval_level)
+       VALUES (?, ?, 'IT')`,
+      [requestId, itRows[0].employee_id],
     );
 
-    // 4️⃣ Decrease asset quantity
+    // 8️⃣ Audit log
     await connection.execute(
-      `UPDATE asset SET quantity = quantity - 1 WHERE asset_id = ?`,
-      [data.asset_id]
+      `INSERT INTO audit_log (action_type, request_id, performed_by)
+       VALUES ('Request', ?, ?)`,
+      [requestId, requester_id],
     );
 
     await connection.commit();
-
-    // 5️⃣ Return full assignment details
-    return fetchAssignmentWithDetails("WHERE a.assignment_id = ?", [
-      result.insertId,
-    ]).then((res) => res[0]);
+    return {
+      message: "Asset request created successfully",
+      request_id: requestId,
+    };
   } catch (err) {
     await connection.rollback();
     throw err;
@@ -130,216 +131,287 @@ export const create = async (data) => {
   }
 };
 
-/**
- * Get all assignments
- */
-export const findAll = async () => {
-  return fetchAssignmentWithDetails();
-};
-
-/**
- * Get assignment by ID
- */
-export const findById = async (id) => {
-  const results = await fetchAssignmentWithDetails(
-    "WHERE a.assignment_id = ?",
-    [id]
-  );
-  return results[0] || null;
-};
-
-/**
- * Get assignments by employee ID
- */
-export const findByEmployeeId = async (employeeId) => {
-  return fetchAssignmentWithDetails("WHERE a.employee_id = ?", [employeeId]);
-};
-
-/**
- * Update an assignment
- */
-export const update = async (id, data) => {
-  const { error } = updateAssignmentSchema.validate({
-    assignment_id: id,
-    ...data,
-  });
-  if (error) throw new Error(formatJoiError(error));
-
-  await pool.execute(
-    `UPDATE assignment 
-     SET employee_id = ?, asset_id = ?, assignment_date = ?, return_date = ?, remarks = ?, status = ?
-     WHERE assignment_id = ?`,
-    [
-      data.employee_id,
-      data.asset_id,
-      data.assignment_date,
-      data.return_date,
-      data.remarks,
-      data.status,
-      id,
-    ]
-  );
-
-  return fetchAssignmentWithDetails("WHERE a.assignment_id = ?", [id]).then(
-    (res) => res[0]
-  );
-};
-
-/**
- * Delete an assignment
- */
-export const remove = async (id) => {
-  const { error } = deleteAssignmentSchema.validate({ assignment_id: id });
-  if (error) throw new Error(formatJoiError(error));
-
-  await pool.execute("DELETE FROM assignment WHERE assignment_id = ?", [id]);
-  return { message: "Assignment deleted successfully" };
-};
-
-/**
- * Update assignment status
- */
-export const updateStatus = async (id, status) => {
-  const { error } = updateAssignmentStatusSchema.validate({
-    assignment_id: id,
-    status,
-  });
-  if (error) throw new Error(formatJoiError(error));
-
-  await pool.execute(
-    "UPDATE assignment SET status = ? WHERE assignment_id = ?",
-    [status, id]
-  );
-
-  return fetchAssignmentWithDetails("WHERE a.assignment_id = ?", [id]).then(
-    (res) => res[0]
-  );
-};
-
-/**
- * Get approval status for a specific assignment
- */ export const getApprovalStatus = async (assignmentId) => {
-  const [rows] = await pool.execute(
-    `SELECT aa.approval_id, aa.role, aa.approval_status, aa.remarks, aa.approval_date,
-            e.employee_id, e.full_name AS approver_name
-       FROM assignment_approval aa
-       JOIN employee e ON aa.approver_id = e.employee_id
-       WHERE aa.assignment_id = ?`,
-    [assignmentId]
-  );
-  return rows;
-};
-
-/**
- * Get pending approvals for an approver
- */
-export const getPendingApprovals = async (approverId) => {
-  const { error } = pendingApprovalsSchema.validate({
-    approverId,
-  });
-
-  if (error) throw new Error(formatJoiError(error));
-  const [rows] = await pool.execute(
-    `SELECT 
-        aa.approval_id,
-        aa.assignment_id,
-        aa.role,
-        aa.approval_status,
-        a.assignment_date,
-        a.status AS assignment_status,
-        e.employee_id,
-        e.full_name AS requested_by,
-        ast.asset_type,
-        ast.brand,
-        ast.model,
-        ast.serial_number
-     FROM assignment_approval aa
-     JOIN assignment a ON aa.assignment_id = a.assignment_id
-     JOIN employee e ON a.employee_id = e.employee_id
-     JOIN asset ast ON a.asset_id = ast.asset_id
-     WHERE aa.approver_id = ?
-       AND aa.approval_status = 'Pending'
-     ORDER BY a.assignment_date`,
-    [approverId]
-  );
-
-  return rows;
-};
-
-// Approve or reject assignment
-export const approveAssignment = async (body) => {
-  const { error } = assignmentStatusSchema.validate({
-    ...body,
-  });
-
-  if (error) throw new Error(formatJoiError(error));
-
-  const { approver_id, role, approval_status, remarks, assignment_id } = body;
+// Issue Asset (FINAL STEP)
+export const issueAsset = async (request_id) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
 
-    // Check if approval already exists for this role
-    const [existing] = await connection.execute(
-      `SELECT * FROM assignment_approval WHERE assignment_id = ? AND role = ?`,
-      [assignment_id, role]
+    // 1️⃣ Fetch approved request
+    const [[req]] = await connection.execute(
+      `SELECT requester_id, asset_id
+       FROM asset_request
+       WHERE request_id = ? AND request_status='Approved'
+       FOR UPDATE`,
+      [request_id],
     );
+    if (!req) throw new Error("Request not approved");
 
-    console.log(existing);
-    return;
-    if (existing.approval_status && existing.approval_status === "Approved") {
-      throw new Error("Already Approved");
-    }
-
-    if (existing.length === 0) {
-      await connection.execute(
-        `INSERT INTO assignment_approval 
-         (assignment_id, approver_id, role, approval_status, remarks, approval_date)
-         VALUES (?, ?, ?, ?, ?, NOW())`,
-        [assignment_id, approver_id, role, approval_status, remarks || null]
-      );
-    } else {
-      await connection.execute(
-        `UPDATE assignment_approval 
-         SET approval_status = ?, remarks = ?, approval_date = NOW()
-         WHERE assignment_id = ? AND role = ?`,
-        [approval_status, remarks || null, assignment_id, role]
-      );
-    }
-
-    // Determine final assignment status
-    const [approvalRows] = await connection.execute(
-      `SELECT role, approval_status FROM assignment_approval WHERE assignment_id = ?`,
-      [assignment_id]
+    // 2️⃣ Fetch and lock asset
+    const [asset] = await connection.execute(
+      "SELECT quantity FROM asset WHERE asset_id = ? FOR UPDATE",
+      [req.asset_id],
     );
+    if (!asset.length) throw new Error("Asset not found");
+    if (asset[0].quantity <= 0) throw new Error("Insufficient asset quantity");
 
-    let finalStatus = "Pending";
-
-    // Management (CEO/Head) requests → IT only
-    // Others → Employee → Team Lead → HR → IT
-    const allApproved = approvalRows.every(
-      (a) => a.approval_status === "Approved"
-    );
-    const anyRejected = approvalRows.some(
-      (a) => a.approval_status === "Rejected"
-    );
-
-    if (anyRejected) finalStatus = "Rejected";
-    else if (allApproved) finalStatus = "Approved";
-
+    // 3️⃣ Issue the asset
     await connection.execute(
-      `UPDATE assignment SET status = ? WHERE assignment_id = ?`,
-      [finalStatus, assignment_id]
+      `INSERT INTO asset_issue
+       (request_id, asset_id, employee_id, issue_date, quantity_issued)
+       VALUES (?, ?, ?, CURDATE(), 1)`,
+      [request_id, req.asset_id, req.requester_id],
+    );
+
+    // 4️⃣ Decrement asset quantity
+    const [updateResult] = await connection.execute(
+      "UPDATE asset SET quantity = quantity - 1 WHERE asset_id = ?",
+      [req.asset_id],
+    );
+    if (updateResult.affectedRows === 0) {
+      throw new Error("Failed to decrement asset quantity");
+    }
+
+    // 5️⃣ Update request status to 'Issued'
+    await connection.execute(
+      "UPDATE asset_request SET request_status='Issued' WHERE request_id=?",
+      [request_id],
+    );
+
+    // 6️⃣ Audit log
+    await connection.execute(
+      `INSERT INTO audit_log (action_type, request_id, performed_by)
+       VALUES ('Issue', ?, ?)`,
+      [request_id, req.requester_id],
     );
 
     await connection.commit();
-    return fetchAssignmentWithDetails("WHERE a.assignment_id = ?", [
-      assignment_id,
-    ]).then((res) => res[0]);
+    return { message: "Asset issued successfully" };
   } catch (err) {
     await connection.rollback();
     throw err;
   } finally {
     connection.release();
   }
+};
+
+// Approval + Final Issue Logic
+export const updateStatus = async (data) => {
+  const { error } = approveAssetRequestSchema.validate(data);
+  if (error) throw new Error(formatJoiError(error));
+
+  const { request_id, approver_id, approval_level, approval_status, remarks } =
+    data;
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // 1️⃣ Update approval record
+    await connection.execute(
+      `UPDATE asset_request_approval
+       SET approval_status = ?, remarks = ?, approval_date = NOW()
+       WHERE request_id = ? AND approver_id = ? AND approval_level = ?`,
+      [
+        approval_status,
+        remarks || null,
+        request_id,
+        approver_id,
+        approval_level,
+      ],
+    );
+
+    // 2️⃣ Audit log for approval/rejection
+    await connection.execute(
+      `INSERT INTO audit_log (action_type, request_id, performed_by)
+       VALUES (?, ?, ?)`,
+      [
+        approval_status === "Approved" ? "Approve" : "Reject",
+        request_id,
+        approver_id,
+      ],
+    );
+
+    // 3️⃣ Check all approvals
+    const [approvals] = await connection.execute(
+      "SELECT approval_status FROM asset_request_approval WHERE request_id = ?",
+      [request_id],
+    );
+
+    const rejected = approvals.some((a) => a.approval_status === "Rejected");
+    const approved = approvals.every((a) => a.approval_status === "Approved");
+
+    if (rejected) {
+      await connection.execute(
+        "UPDATE asset_request SET request_status='Rejected' WHERE request_id=?",
+        [request_id],
+      );
+    }
+
+    if (approved) {
+      // 4️⃣ Mark request as approved
+      await connection.execute(
+        "UPDATE asset_request SET request_status='Approved' WHERE request_id=?",
+        [request_id],
+      );
+
+      // 5️⃣ Fetch the approved request and lock it
+      const [[req]] = await connection.execute(
+        `SELECT requester_id, asset_id
+         FROM asset_request
+         WHERE request_id = ? AND request_status='Approved'
+         FOR UPDATE`,
+        [request_id],
+      );
+      if (!req) throw new Error("Approved request not found");
+
+      // 6️⃣ Fetch and lock the asset row
+      const [assetRows] = await connection.execute(
+        "SELECT quantity FROM asset WHERE asset_id = ? FOR UPDATE",
+        [req.asset_id],
+      );
+      if (!assetRows.length) throw new Error("Asset not found");
+      if (assetRows[0].quantity <= 0)
+        throw new Error("Insufficient asset quantity");
+
+      // 7️⃣ Issue asset (record issuance)
+      await connection.execute(
+        `INSERT INTO asset_issue
+         (request_id, asset_id, employee_id, issue_date, quantity_issued)
+         VALUES (?, ?, ?, CURDATE(), 1)`,
+        [request_id, req.asset_id, req.requester_id],
+      );
+
+      // 8️⃣ Decrement actual asset quantity
+      await connection.execute(
+        "UPDATE asset SET quantity = quantity - 1 WHERE asset_id = ?",
+        [req.asset_id],
+      );
+
+      // 9️⃣ Update request status to 'Issued'
+      await connection.execute(
+        "UPDATE asset_request SET request_status='Issued' WHERE request_id=?",
+        [request_id],
+      );
+
+      // 🔟 Audit log for issue
+      await connection.execute(
+        `INSERT INTO audit_log (action_type, request_id, performed_by)
+         VALUES ('Issue', ?, ?)`,
+        [request_id, req.requester_id],
+      );
+    }
+
+    await connection.commit();
+    return { message: "Approval updated and asset issued" };
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
+  }
+};
+
+/**
+ * Get all requests (Admin/HR) with optional filters: status, requester_id
+ */
+export const getAllRequests = async (filters = {}) => {
+  const params = [];
+  let where = "WHERE 1=1";
+
+  if (filters.status) {
+    where += " AND ar.request_status = ?";
+    params.push(filters.status);
+  }
+
+  if (filters.requester_id) {
+    where += " AND ar.requester_id = ?";
+    params.push(filters.requester_id);
+  }
+
+  const [rows] = await pool.execute(
+    `SELECT ar.*, e.full_name AS requester_name, ast.asset_type, ast.brand, ast.model, ast.serial_number
+     FROM asset_request ar
+     JOIN employee e ON ar.requester_id = e.employee_id
+     JOIN asset ast ON ar.asset_id = ast.asset_id
+     ${where}
+     ORDER BY ar.request_date DESC`,
+    params,
+  );
+  return rows;
+};
+
+/**
+ * Get pending approvals (Team Lead / IT)
+ */
+export const getPendingApprovals = async (approver_id) => {
+  if (!approver_id) throw new Error("Approver ID required");
+
+  // Fetch the level of the approver
+  const [[approver]] = await pool.execute(
+    "SELECT role, department_id FROM employee WHERE employee_id = ?",
+    [approver_id],
+  );
+  if (!approver) throw new Error("Approver not found");
+
+  let query = `
+    SELECT ar.request_id, ar.requester_id, ar.asset_id, ar.request_type,
+           ar.request_status, ar.request_date,
+           e.full_name AS requester_name,
+           ast.asset_type, ast.brand, ast.model, ast.serial_number,
+           ara.approval_level
+    FROM asset_request ar
+    JOIN asset_request_approval ara ON ar.request_id = ara.request_id
+    JOIN employee e ON ar.requester_id = e.employee_id
+    JOIN asset ast ON ar.asset_id = ast.asset_id
+    WHERE ara.approver_id = ? AND ara.approval_status = 'Pending'
+  `;
+  const params = [approver_id];
+
+  // If IT, hide Employee requests still pending with Team Lead
+  if (approver.department_id === 3) {
+    query += `
+      AND (
+        ar.request_type = 'Management'
+        OR NOT EXISTS (
+          SELECT 1
+          FROM asset_request_approval t
+          WHERE t.request_id = ar.request_id
+            AND t.approval_level = 'TeamLead'
+            AND t.approval_status = 'Pending'
+        )
+      )
+    `;
+  }
+
+  query += " ORDER BY ar.request_date DESC";
+
+  const [rows] = await pool.execute(query, params);
+  return rows;
+};
+
+/**
+ * Get employee's assigned assets and status
+ */
+export const getEmployeeAssets = async (employee_id, filters = {}) => {
+  if (!employee_id) throw new Error("Employee ID required");
+
+  const params = [employee_id];
+  let where = "ar.requester_id = ?";
+
+  if (filters.status) {
+    where += " AND ar.request_status = ?";
+    params.push(filters.status); // 'Pending', 'Approved', 'Issued', etc.
+  }
+
+  const [rows] = await pool.execute(
+    `SELECT ar.*, ast.asset_type, ast.brand, ast.model, ast.serial_number
+     FROM asset_request ar
+     JOIN asset ast ON ar.asset_id = ast.asset_id
+     WHERE ${where}
+     ORDER BY ar.request_date DESC`,
+    params,
+  );
+
+  return rows;
 };
