@@ -14,7 +14,7 @@ export const update = async (data) => {
 
   const { employee_id, team_id } = data;
 
-  // 1️⃣ Check if employee exists
+  //  Check if employee exists
   const [employeeRows] = await pool.execute(
     "SELECT employee_id FROM employee WHERE employee_id = ?",
     [employee_id],
@@ -159,108 +159,62 @@ export const updateEmployeeTeam = async (data) => {
 };
 
 // Join employee to projects
-export const joinProjects = async (data) => {
+export const updateEmployeeProjects = async (data) => {
   const { error } = joinProjectsSchema.validate(data);
   if (error) throw new Error(formatJoiError(error));
 
   const { employee_id, project_ids } = data;
 
-  // Check if employee exists
+  //  Check if employee exists
   const [employeeRows] = await pool.execute(
-    "SELECT * FROM employee WHERE employee_id = ?",
+    "SELECT employee_id FROM employee WHERE employee_id = ?",
     [employee_id],
   );
   if (!employeeRows.length) throw new Error("Employee not found");
 
-  for (let project_id of project_ids) {
-    await pool.execute(
-      "INSERT IGNORE INTO employee_project (employee_id, project_id) VALUES (?, ?)",
-      [employee_id, project_id],
-    );
-  }
-
-  return { message: "Employee added to projects successfully" };
-};
-
-// Get employee's team
-export const getEmployeeTeam = async (employee_id) => {
-  if (!employee_id || isNaN(employee_id))
-    throw new Error("Employee ID must be a valid number");
-
-  const [rows] = await pool.execute(
-    `SELECT t.team_id, t.team_name, d.department_name
-     FROM employee_team et
-     JOIN team t ON et.team_id = t.team_id
-     JOIN department d ON t.department_id = d.department_id
-     WHERE et.employee_id = ?`,
-    [employee_id],
+  //  Validate project IDs exist
+  const [validProjects] = await pool.execute(
+    `SELECT project_id FROM project WHERE project_id IN (${project_ids
+      .map(() => "?")
+      .join(",")})`,
+    project_ids,
   );
 
-  return rows[0] || null;
-};
-
-// Get all employees with team & department
-export const getAllEmployeesWithTeamDept = async (options = {}) => {
-  const { error } = findAllEmployeeOptionsSchema.validate(options);
-  if (error) throw new Error(formatJoiError(error));
-
-  const { page, limit, search } = options;
-  const hasSearch = typeof search === "string" && search.trim().length >= 3;
-  const hasPagination = page != null && limit != null;
-
-  let whereClause = "";
-  const params = [];
-
-  if (hasSearch) {
-    whereClause = " WHERE e.full_name LIKE ?";
-    params.push(`%${search.trim()}%`);
+  if (validProjects.length !== project_ids.length) {
+    throw new Error("One or more project IDs are invalid");
   }
 
-  if (hasPagination) {
-    const countSql = `
-      SELECT COUNT(*) as cnt
-      FROM employee e
-      LEFT JOIN employee_team et ON e.employee_id = et.employee_id
-      LEFT JOIN team t ON et.team_id = t.team_id
-      LEFT JOIN department d ON t.department_id = d.department_id
-      ${whereClause}
-    `;
-    const [countRows] = await pool.execute(countSql, params);
-    const total = countRows[0].cnt;
+  //  Transaction (IMPORTANT)
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    const dataSql = `
-      SELECT e.employee_id, e.full_name, e.designation, e.role,
-             t.team_name, d.department_name
-      FROM employee e
-      LEFT JOIN employee_team et ON e.employee_id = et.employee_id
-      LEFT JOIN team t ON et.team_id = t.team_id
-      LEFT JOIN department d ON t.department_id = d.department_id
-      ${whereClause}
-      ORDER BY e.employee_id
-      LIMIT ? OFFSET ?
-    `;
-    const dataParams = params.concat([parseInt(limit), offset]);
-    const [rows] = await pool.execute(dataSql, dataParams);
+    // Remove existing mappings
+    await connection.execute(
+      "DELETE FROM employee_project WHERE employee_id = ?",
+      [employee_id],
+    );
 
-    return {
-      total_records: total,
-      page: parseInt(page),
-      limit: parseInt(limit),
-      records: rows,
-    };
-  } else {
-    const dataSql = `
-      SELECT e.employee_id, e.full_name, e.designation, e.role,
-             t.team_name, d.department_name
-      FROM employee e
-      LEFT JOIN employee_team et ON e.employee_id = et.employee_id
-      LEFT JOIN team t ON et.team_id = t.team_id
-      LEFT JOIN department d ON t.department_id = d.department_id
-      ${whereClause}
-      ORDER BY e.employee_id
-    `;
-    const [rows] = await pool.execute(dataSql, params);
-    return rows;
+    // Insert new mappings
+    for (const project_id of project_ids) {
+      await connection.execute(
+        "INSERT INTO employee_project (employee_id, project_id) VALUES (?, ?)",
+        [employee_id, project_id],
+      );
+    }
+
+    await connection.commit();
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
   }
+
+  return {
+    message: "Employee projects updated successfully",
+  };
 };
+
+
+

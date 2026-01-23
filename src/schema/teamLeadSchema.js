@@ -14,8 +14,15 @@ export const updateEmployeeTeamSchema = Joi.object({
 
 // Join projects for an employee
 export const joinProjectsSchema = Joi.object({
-  employee_id: Joi.number().integer().required(),
-  project_ids: Joi.array().items(Joi.number().integer()).min(1).required(),
+  employee_id: Joi.number().integer().positive().required(),
+  project_ids: Joi.array()
+    .items(Joi.number().integer().positive())
+    .min(1)
+    .required()
+    .messages({
+      "array.base": "Project IDs must be an array",
+      "array.min": "At least one project ID is required",
+    }),
 });
 
 // Options for listing employees

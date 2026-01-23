@@ -8,3 +8,6 @@ export const teamLeadMembers = async (id) =>
 
 export const updateTeam = async (data) =>
   await TeamLead.updateEmployeeTeam(data);
+
+export const updateProject = async (data) =>
+  await TeamLead.updateEmployeeProjects(data);

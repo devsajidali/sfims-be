@@ -7,8 +7,9 @@ import assignmentRoutes from "./routes/assignmentRoutes.js";
 import auditLogRoutes from "./routes/auditLogRoutes.js";
 import teamLeadRoutes from "./routes/teamLeadRoutes.js";
 
-const app = express();
+import chalk from "chalk";
 
+const app = express();
 app.use(express.json());
 
 app.use((req, res, next) => {
@@ -16,13 +17,23 @@ app.use((req, res, next) => {
 
   res.on("finish", () => {
     const duration = Date.now() - startTime;
+    const status = res.statusCode;
+
+    const statusColor =
+      status >= 500
+        ? chalk.red(status)
+        : status >= 400
+          ? chalk.yellow(status)
+          : chalk.green(status);
+
     console.log(
-      `${req.method} ${req.originalUrl} | Status: ${res.statusCode} | Duration: ${duration}ms`,
+      `${chalk.blue(req.method)} ${req.originalUrl} | Status: ${statusColor} | ${chalk.gray(duration + "ms")}`,
     );
   });
 
   next();
 });
+
 app.use("/api/employees", employeeRoutes);
 app.use("/api/projects", projectRoutes);
 app.use("/api/departments", departmentsRoutes);
