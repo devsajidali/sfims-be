@@ -12,6 +12,9 @@ export const findById = async (id) => {
   const [rows] = await pool.execute("SELECT * FROM asset WHERE asset_id = ?", [
     id,
   ]);
+  if (!rows?.length) {
+    throw new Error(`Asset with id ${id} not found`);
+  }
   return rows[0] || null;
 };
 
@@ -52,56 +55,75 @@ export const create = async (data) => {
       data.warranty_expiry ?? null,
       data.status ?? "Available",
       data.quantity ?? 1,
-    ]
+    ],
   );
 
-  return { asset_id: result.insertId, ...data };
+  return {
+    message: "Asset(s) added successfully",
+  };
 };
 
 // UPDATE ASSET
 export const update = async (data) => {
-  const { error } = updateAssetSchema.validate(data);
+  // Validate only that asset_id exists
+  const { error } = updateAssetSchema.validate(data, { presence: "optional" });
   if (error) throw new Error(formatJoiError(error));
 
-  const existing = await findById(data?.asset_id);
+  const existing = await findById(data.asset_id);
   if (!existing) throw new Error(`Asset with id ${data.asset_id} not found`);
 
-  const duplicate = await existsBySerialNumber(
-    data.serial_number,
-    data.asset_id
-  );
-  if (duplicate) throw new Error("Serial number already exists");
-
-  const [result] = await pool.execute(
-    `UPDATE asset SET
-      asset_type = ?, brand = ?, model = ?, specifications = ?, serial_number = ?,
-      purchase_date = ?, vendor = ?, warranty_expiry = ?, status = ?, quantity = ?
-     WHERE asset_id = ?`,
-    [
-      data.asset_type,
-      data.brand ?? null,
-      data.model ?? null,
-      data.specifications ?? null,
+  // Only check duplicate if serial_number is provided
+  if (data.serial_number) {
+    const duplicate = await existsBySerialNumber(
       data.serial_number,
-      data.purchase_date ?? null,
-      data.vendor ?? null,
-      data.warranty_expiry ?? null,
-      data.status ?? "Available",
-      data.quantity ?? 1,
       data.asset_id,
-    ]
-  );
+    );
+    if (duplicate) throw new Error("Serial number already exists");
+  }
 
-  return { asset_id: data.asset_id, ...data };
+  // Build dynamic query for only provided fields
+  const fields = [];
+  const values = [];
+
+  const updatableFields = [
+    "asset_type",
+    "brand",
+    "model",
+    "specifications",
+    "serial_number",
+    "purchase_date",
+    "vendor",
+    "warranty_expiry",
+    "status",
+    "quantity",
+  ];
+
+  updatableFields.forEach((key) => {
+    if (data[key] !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(data[key]);
+    }
+  });
+
+  if (fields.length === 0) return existing; // Nothing to update
+
+  values.push(data.asset_id); // For WHERE clause
+
+  const sql = `UPDATE asset SET ${fields.join(", ")} WHERE asset_id = ?`;
+  await pool.execute(sql, values);
+
+  return {
+    message: "Asset updated successfully",
+  };
 };
 
 // DELETE ASSET
-export const remove = async (assetId, res) => {
+export const remove = async (assetId) => {
   // 1. Validate input
   const { error } = deleteAssetSchema.validate({ asset_id: assetId });
   if (error) throw new Error(formatJoiError(error));
 
-  // 2. Check if asset exists
+  // 2. Check if the asset exists
   const existing = await findById(assetId);
   if (!existing) throw new Error(`Asset with id ${assetId} not found`);
 
@@ -109,7 +131,7 @@ export const remove = async (assetId, res) => {
     // 3. Delete the asset
     const [result] = await pool.execute(
       "DELETE FROM asset WHERE asset_id = ?",
-      [assetId]
+      [assetId],
     );
 
     // 4. Check if deletion actually happened
@@ -117,19 +139,18 @@ export const remove = async (assetId, res) => {
       throw new Error("Failed to delete asset");
     }
 
-    // 5. Success
-    res.status(500).json({
+    // 5. Return a success message
+    return {
       message: "Asset deleted successfully",
-    });
-    return;
+    };
   } catch (err) {
-    // Handle foreign key constraint errors
+    // 6. Handle foreign key constraint errors
     if (err.code === "ER_ROW_IS_REFERENCED_2") {
       throw new Error(
-        "Cannot delete asset: It is assigned to an employee or referenced elsewhere."
+        "Cannot delete asset: It is assigned to an employee or referenced elsewhere.",
       );
     }
-    throw err; // rethrow other errors
+    throw err;
   }
 };
 
@@ -149,12 +170,12 @@ export const findAll = async (options = {}) => {
   // Search filter
   if (search && search.trim().length >= 3) {
     whereClauses.push(
-      "(asset_type LIKE ? OR model LIKE ? OR serial_number LIKE ?)"
+      "(asset_type LIKE ? OR model LIKE ? OR serial_number LIKE ?)",
     );
     params.push(
       `%${search.trim()}%`,
       `%${search.trim()}%`,
-      `%${search.trim()}%`
+      `%${search.trim()}%`,
     );
   }
 
@@ -166,7 +187,7 @@ export const findAll = async (options = {}) => {
   if (page && limit) {
     const [countRows] = await pool.execute(
       `SELECT COUNT(*) as cnt FROM asset ${whereClause}`,
-      params
+      params,
     );
     total = countRows[0].cnt;
   }

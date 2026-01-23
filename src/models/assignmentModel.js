@@ -3,7 +3,9 @@ import {
   createAssignmentSchema,
   updateAssignmentSchema,
   deleteAssignmentSchema,
+  pendingApprovalsSchema,
   updateAssignmentStatusSchema,
+  assignmentStatusSchema,
 } from "../schema/assignmentSchema.js";
 import { formatJoiError } from "../utils/helpers.js";
 
@@ -72,16 +74,18 @@ export const create = async (data) => {
   try {
     await connection.beginTransaction();
 
-    // 1️⃣ Check if asset quantity is available
+    // 1️⃣ Check asset availability
     const [assetRows] = await connection.execute(
       `SELECT quantity FROM asset WHERE asset_id = ?`,
       [data.asset_id]
     );
 
     if (assetRows.length === 0) throw new Error("Asset not found");
-    if (assetRows[0].quantity <= 0) throw new Error("Asset is out of stock");
 
-    // 2️⃣ Check if employee already has this asset assigned and not returned
+    const availableQuantity = assetRows[0].quantity;
+    if (availableQuantity <= 0) throw new Error("Asset is out of stock");
+
+    // 2️⃣ Check if employee already has this asset assigned
     const [existingAssignment] = await connection.execute(
       `SELECT * FROM assignment 
        WHERE employee_id = ? AND asset_id = ? AND (return_date IS NULL OR return_date > NOW())`,
@@ -91,7 +95,7 @@ export const create = async (data) => {
     if (existingAssignment.length > 0)
       throw new Error("Employee already has this asset assigned");
 
-    // 3️⃣ Insert assignment
+    // 3️⃣ Insert assignment (always 1 asset per assignment)
     const [result] = await connection.execute(
       `INSERT INTO assignment 
        (employee_id, asset_id, assignment_date, return_date, remarks, status)
@@ -210,4 +214,132 @@ export const updateStatus = async (id, status) => {
   return fetchAssignmentWithDetails("WHERE a.assignment_id = ?", [id]).then(
     (res) => res[0]
   );
+};
+
+/**
+ * Get approval status for a specific assignment
+ */ export const getApprovalStatus = async (assignmentId) => {
+  const [rows] = await pool.execute(
+    `SELECT aa.approval_id, aa.role, aa.approval_status, aa.remarks, aa.approval_date,
+            e.employee_id, e.full_name AS approver_name
+       FROM assignment_approval aa
+       JOIN employee e ON aa.approver_id = e.employee_id
+       WHERE aa.assignment_id = ?`,
+    [assignmentId]
+  );
+  return rows;
+};
+
+/**
+ * Get pending approvals for an approver
+ */
+export const getPendingApprovals = async (approverId) => {
+  const { error } = pendingApprovalsSchema.validate({
+    approverId,
+  });
+
+  if (error) throw new Error(formatJoiError(error));
+  const [rows] = await pool.execute(
+    `SELECT 
+        aa.approval_id,
+        aa.assignment_id,
+        aa.role,
+        aa.approval_status,
+        a.assignment_date,
+        a.status AS assignment_status,
+        e.employee_id,
+        e.full_name AS requested_by,
+        ast.asset_type,
+        ast.brand,
+        ast.model,
+        ast.serial_number
+     FROM assignment_approval aa
+     JOIN assignment a ON aa.assignment_id = a.assignment_id
+     JOIN employee e ON a.employee_id = e.employee_id
+     JOIN asset ast ON a.asset_id = ast.asset_id
+     WHERE aa.approver_id = ?
+       AND aa.approval_status = 'Pending'
+     ORDER BY a.assignment_date`,
+    [approverId]
+  );
+
+  return rows;
+};
+
+// Approve or reject assignment
+export const approveAssignment = async (body) => {
+  const { error } = assignmentStatusSchema.validate({
+    ...body,
+  });
+
+  if (error) throw new Error(formatJoiError(error));
+
+  const { approver_id, role, approval_status, remarks, assignment_id } = body;
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // Check if approval already exists for this role
+    const [existing] = await connection.execute(
+      `SELECT * FROM assignment_approval WHERE assignment_id = ? AND role = ?`,
+      [assignment_id, role]
+    );
+
+    console.log(existing);
+    return;
+    if (existing.approval_status && existing.approval_status === "Approved") {
+      throw new Error("Already Approved");
+    }
+
+    if (existing.length === 0) {
+      await connection.execute(
+        `INSERT INTO assignment_approval 
+         (assignment_id, approver_id, role, approval_status, remarks, approval_date)
+         VALUES (?, ?, ?, ?, ?, NOW())`,
+        [assignment_id, approver_id, role, approval_status, remarks || null]
+      );
+    } else {
+      await connection.execute(
+        `UPDATE assignment_approval 
+         SET approval_status = ?, remarks = ?, approval_date = NOW()
+         WHERE assignment_id = ? AND role = ?`,
+        [approval_status, remarks || null, assignment_id, role]
+      );
+    }
+
+    // Determine final assignment status
+    const [approvalRows] = await connection.execute(
+      `SELECT role, approval_status FROM assignment_approval WHERE assignment_id = ?`,
+      [assignment_id]
+    );
+
+    let finalStatus = "Pending";
+
+    // Management (CEO/Head) requests → IT only
+    // Others → Employee → Team Lead → HR → IT
+    const allApproved = approvalRows.every(
+      (a) => a.approval_status === "Approved"
+    );
+    const anyRejected = approvalRows.some(
+      (a) => a.approval_status === "Rejected"
+    );
+
+    if (anyRejected) finalStatus = "Rejected";
+    else if (allApproved) finalStatus = "Approved";
+
+    await connection.execute(
+      `UPDATE assignment SET status = ? WHERE assignment_id = ?`,
+      [finalStatus, assignment_id]
+    );
+
+    await connection.commit();
+    return fetchAssignmentWithDetails("WHERE a.assignment_id = ?", [
+      assignment_id,
+    ]).then((res) => res[0]);
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
+  }
 };

@@ -8,7 +8,7 @@ export const createAssignmentSchema = Joi.object({
   return_date: Joi.date().optional().allow(null),
   remarks: Joi.string().max(255).optional().allow(""),
   status: Joi.string()
-    .valid("assigned", "team_lead", "hr", "it")
+    .valid("Pending", "Approved", "Rejected", "Assigned", "team_lead")
     .optional()
     .default("assigned"),
 });
@@ -21,7 +21,9 @@ export const updateAssignmentSchema = Joi.object({
   assignment_date: Joi.date().required(),
   return_date: Joi.date().optional().allow(null),
   remarks: Joi.string().max(255).optional().allow(""),
-  status: Joi.string().valid("assigned", "team_lead", "hr", "it").optional(),
+  status: Joi.string()
+    .valid("Pending", "Approved", "Rejected", "Assigned", "team_lead")
+    .optional(),
 });
 
 // Delete assignment schema
@@ -41,4 +43,16 @@ export const findAllAssignmentsSchema = Joi.object({
 export const updateAssignmentStatusSchema = Joi.object({
   assignment_id: Joi.number().integer().required(),
   status: Joi.string().valid("assigned", "team_lead", "hr", "it").required(),
+});
+
+export const pendingApprovalsSchema = Joi.object({
+  approverId: Joi.number().integer().required(),
+});
+
+export const assignmentStatusSchema = Joi.object({
+  approver_id: Joi.number().integer().required(),
+  assignment_id: Joi.number().integer().required(),
+  role: Joi.string().valid("TeamLead", "HR", "IT").required(),
+  approval_status: Joi.string().valid("Approved", "Rejected").required(),
+  remarks: Joi.string().min(1).max(150).required(),
 });

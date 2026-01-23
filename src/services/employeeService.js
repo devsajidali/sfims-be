@@ -10,6 +10,5 @@ export const postProcessBulkFile = async (id) =>
   await Employee.processBulkFile(id);
 
 export const createEmployee = async (data) => await Employee.create(data);
-export const updateEmployee = async (id, data) =>
-  await Employee.update(id, data);
+export const updateEmployee = async (data) => await Employee.update(data);
 export const deleteEmployee = async (id) => await Employee.remove(id);

@@ -63,7 +63,7 @@ export const bulkUpload = async (req, res) => {
     const result = await employeeService.postProcessBulkFile(
       req.file,
       department_id,
-      project_id
+      project_id,
     );
 
     res.json(result);
@@ -84,10 +84,7 @@ export const create = async (req, res) => {
 
 export const update = async (req, res) => {
   try {
-    const employee = await employeeService.updateEmployee(
-      req.params.id,
-      req.body
-    );
+    const employee = await employeeService.updateEmployee(req.body);
     res.json(employee);
   } catch (error) {
     res.status(400).json({ error: error.message });

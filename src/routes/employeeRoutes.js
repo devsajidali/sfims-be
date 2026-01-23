@@ -19,7 +19,7 @@ router.post(
 );
 
 router.post("/", employeeController.create);
-router.put("/:id", employeeController.update);
+router.put("/", employeeController.update);
 router.delete("/:id", employeeController.remove);
 
 export default router;

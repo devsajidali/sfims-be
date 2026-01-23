@@ -2,13 +2,13 @@ import Joi from "joi";
 
 // Department creation schema
 export const createDepartmentSchema = Joi.object({
-  department_name: Joi.string().min(3).max(50).required(),
+  department_name: Joi.string().min(2).max(50).required(),
 });
 
 // Department update schema
 export const updateDepartmentSchema = Joi.object({
   department_id: Joi.number().integer().required(),
-  department_name: Joi.string().min(3).max(50).required(),
+  department_name: Joi.string().min(2).max(50).required(),
 });
 
 // Department delete schema

@@ -19,11 +19,11 @@ export const createAssetSchema = Joi.object({
 // UPDATE
 export const updateAssetSchema = Joi.object({
   asset_id: Joi.number().integer().required(),
-  asset_type: Joi.string().min(2).max(50).required(),
+  asset_type: Joi.string().min(2).max(50),
   brand: Joi.string().max(50).optional().allow(null),
   model: Joi.string().max(50).optional().allow(null),
   specifications: Joi.string().max(200).optional().allow(null),
-  serial_number: Joi.string().max(100).required(),
+  serial_number: Joi.string().max(100),
   purchase_date: Joi.date().optional().allow(null),
   vendor: Joi.string().max(50).optional().allow(null),
   warranty_expiry: Joi.date().optional().allow(null),

@@ -38,8 +38,8 @@ export const update = async (req, res) => {
 
 export const remove = async (req, res) => {
   try {
-    await assetService.deleteAsset(req.query.asset_id, res);
-    res.status(204).send();
+    const response = await assetService.deleteAsset(req.query.asset_id, res);
+    res.json(response);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
