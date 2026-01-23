@@ -28,7 +28,7 @@ app.use("/api/projects", projectRoutes);
 app.use("/api/departments", departmentsRoutes);
 app.use("/api/assets", assetRoutes);
 app.use("/api/assignments", assignmentRoutes);
-app.use("/api/teamlead", teamLeadRoutes);
+app.use("/api/team-lead", teamLeadRoutes);
 
 app.use("/api/audit-logs", auditLogRoutes);
 
