@@ -8,28 +8,41 @@ import {
 } from "../schema/teamLeadSchema.js";
 import { formatJoiError } from "../utils/helpers.js";
 
-// Assign a team lead to a team
 export const update = async (data) => {
   const { error } = assignTeamLeadSchema.validate(data);
   if (error) throw new Error(formatJoiError(error));
 
   const { employee_id, team_id } = data;
 
-  // Check if employee exists
+  // 1️⃣ Check if employee exists
   const [employeeRows] = await pool.execute(
-    "SELECT * FROM employee WHERE employee_id = ?",
+    "SELECT employee_id FROM employee WHERE employee_id = ?",
     [employee_id],
   );
   if (!employeeRows.length) throw new Error("Employee not found");
 
-  // Check if team exists
+  // 2️⃣ Check if team exists
   const [teamRows] = await pool.execute(
-    "SELECT * FROM team WHERE team_id = ?",
+    "SELECT team_id FROM team WHERE team_id = ?",
     [team_id],
   );
   if (!teamRows.length) throw new Error("Team not found");
 
-  // Check if team already has a lead
+  // 3️⃣ Ensure team lead belongs to the team
+  const [employeeTeamRows] = await pool.execute(
+    "SELECT * FROM employee_team WHERE employee_id = ? AND team_id = ?",
+    [employee_id, team_id],
+  );
+
+  if (!employeeTeamRows.length) {
+    // Add team lead to the team
+    await pool.execute(
+      "INSERT INTO employee_team (employee_id, team_id) VALUES (?, ?)",
+      [employee_id, team_id],
+    );
+  }
+
+  // 4️⃣ Assign / Update team lead
   const [existingLead] = await pool.execute(
     "SELECT * FROM team_lead WHERE team_id = ?",
     [team_id],
@@ -37,7 +50,7 @@ export const update = async (data) => {
 
   if (existingLead.length) {
     await pool.execute(
-      "UPDATE team_lead SET employee_id = ?, status='Active' WHERE team_id = ?",
+      "UPDATE team_lead SET employee_id = ?, status = 'Active' WHERE team_id = ?",
       [employee_id, team_id],
     );
   } else {
@@ -47,7 +60,9 @@ export const update = async (data) => {
     );
   }
 
-  return { message: "Team lead assigned successfully" };
+  return {
+    message: "Team lead assigned successfully and added to team",
+  };
 };
 
 // Get team members by team lead
@@ -68,7 +83,7 @@ export const getTeamMembersByLead = async (teamLeadId) => {
      JOIN team t ON tl.team_id = t.team_id
      JOIN employee e ON tl.employee_id = e.employee_id
      WHERE tl.employee_id = ? AND tl.status = 'Active'`,
-    [teamLeadId]
+    [teamLeadId],
   );
 
   if (!teamLeadRows.length) {
@@ -84,7 +99,7 @@ export const getTeamMembersByLead = async (teamLeadId) => {
      JOIN employee e ON et.employee_id = e.employee_id
      WHERE et.team_id = ?
        AND e.employee_id != ?`,
-    [teamInfo.team_id, teamLeadId]
+    [teamInfo.team_id, teamLeadId],
   );
 
   return {
@@ -100,7 +115,6 @@ export const getTeamMembersByLead = async (teamLeadId) => {
     members,
   };
 };
-
 
 // Update employee team
 export const updateEmployeeTeam = async (data) => {

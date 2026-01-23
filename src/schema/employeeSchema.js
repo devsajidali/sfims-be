@@ -8,7 +8,5 @@ export const createEmployeeSchema = Joi.object({
   contact_number: Joi.string().pattern(/^\d+$/).min(7).max(15).optional(),
   group: Joi.array()
     .items(Joi.string().min(1).max(50))
-    .min(2)
-    .max(2)
     .required(), // department + team are required
 });

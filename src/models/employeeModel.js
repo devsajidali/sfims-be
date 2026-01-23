@@ -206,6 +206,8 @@ export const create = async (data) => {
   if (error) throw new Error(formatJoiError(error));
 
   const connection = await pool.getConnection();
+
+  const isUpperManagement = ["CEO"].includes(data.designation);
   try {
     await connection.beginTransaction();
 
@@ -221,7 +223,10 @@ export const create = async (data) => {
     }
 
     // Validate group
-    if (!Array.isArray(value.group) || value.group.length < 2) {
+    if (
+      (!Array.isArray(value.group) || value.group.length < 2) &&
+      !isUpperManagement
+    ) {
       const err = new Error(
         "Group must have at least 2 items: department and team",
       );
@@ -245,10 +250,10 @@ export const create = async (data) => {
         }
       }
 
-      if (departmentId && !teamId) {
+      if (!teamId) {
         const [team] = await connection.execute(
-          "SELECT team_id FROM team WHERE team_name = ? AND department_id = ?",
-          [item, departmentId],
+          "SELECT team_id FROM team WHERE team_name = ?",
+          [item],
         );
         if (team[0]) {
           teamId = team[0].team_id;
@@ -265,7 +270,7 @@ export const create = async (data) => {
       throw err;
     }
 
-    if (!teamId) {
+    if (!teamId && !isUpperManagement) {
       const err = new Error(
         `No valid team found in group: ${value.group.join(", ")}`,
       );
@@ -287,20 +292,20 @@ export const create = async (data) => {
         value.contact_number || null,
       ],
     );
-
     const employeeId = result.insertId;
+    if (teamId) {
 
-    await connection.execute(
-      "INSERT INTO employee_team (employee_id, team_id) VALUES (?, ?)",
-      [employeeId, teamId],
-    );
+      await connection.execute(
+        "INSERT INTO employee_team (employee_id, team_id) VALUES (?, ?)",
+        [employeeId, teamId],
+      );
 
-    await connection.commit();
-
+      await connection.commit();
+    }
     return {
       employee_id: employeeId,
       department_id: departmentId,
-      team_id: teamId,
+      team_id: teamId ?? null,
       ...value,
     };
   } catch (err) {

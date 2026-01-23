@@ -18,3 +18,13 @@ export const getTeamMembers = async (req, res) => {
     res.status(404).json({ error: error.message });
   }
 };
+
+export const updateEmployeeTeam = async (req, res) => {
+  try {
+    const response = await teamLeadService.updateTeam(req.body);
+    res.json(response);
+  } catch (error) {
+    console.log(error);
+    res.status(400).json({ error: error.message });
+  }
+};
