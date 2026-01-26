@@ -207,7 +207,7 @@ export const create = async (data) => {
 
   const connection = await pool.getConnection();
 
-  const isUpperManagement = ["CEO"].includes(data.designation);
+  const isUpperManagement = ["CEO"].includes(data.group);
   try {
     await connection.beginTransaction();
 
@@ -453,10 +453,8 @@ export const update = async (data) => {
     await connection.commit();
 
     return {
-      employee_id: id,
-      department_id: departmentId,
-      team_id: teamId,
-      ...data,
+      title:"success",
+      message: "Employee profile updated successfully"
     };
   } catch (err) {
     await connection.rollback();

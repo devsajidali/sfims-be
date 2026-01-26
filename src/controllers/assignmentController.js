@@ -29,9 +29,7 @@ export const approveAssetRequest = async (req, res) => {
 
 export const getPendingApprovals = async (req, res) => {
   try {
-    const approvals = await assignmentService.getPending(
-      req.query.approverId,
-    );
+    const approvals = await assignmentService.getPending(req.query.approverId);
     res.json(approvals);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -40,9 +38,7 @@ export const getPendingApprovals = async (req, res) => {
 
 export const getAllRequests = async (req, res) => {
   try {
-    const approvals = await assignmentService.allRequests(
-      req.query.approverId,
-    );
+    const approvals = await assignmentService.allRequests(req.query.approverId);
     res.json(approvals);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -52,12 +48,11 @@ export const getAllRequests = async (req, res) => {
 export const getEmployeeAssets = async (req, res) => {
   try {
     const approvals = await assignmentService.employeeAssets(
-      req.query.approverId,
+      req.query.employee_id,
+      req.query.status,
     );
     res.json(approvals);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
-
-

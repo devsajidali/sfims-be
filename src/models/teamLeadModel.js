@@ -13,56 +13,109 @@ export const update = async (data) => {
   if (error) throw new Error(formatJoiError(error));
 
   const { employee_id, team_id } = data;
+  const conn = await pool.getConnection();
 
-  //  Check if employee exists
-  const [employeeRows] = await pool.execute(
-    "SELECT employee_id FROM employee WHERE employee_id = ?",
-    [employee_id],
-  );
-  if (!employeeRows.length) throw new Error("Employee not found");
+  try {
+    await conn.beginTransaction();
 
-  // 2️⃣ Check if team exists
-  const [teamRows] = await pool.execute(
-    "SELECT team_id FROM team WHERE team_id = ?",
-    [team_id],
-  );
-  if (!teamRows.length) throw new Error("Team not found");
+    // 1️⃣ Employee exists
+    const [employeeRows] = await conn.execute(
+      "SELECT employee_id FROM employee WHERE employee_id = ?",
+      [employee_id],
+    );
+    if (!employeeRows.length) throw new Error("Employee not found");
 
-  // 3️⃣ Ensure team lead belongs to the team
-  const [employeeTeamRows] = await pool.execute(
-    "SELECT * FROM employee_team WHERE employee_id = ? AND team_id = ?",
-    [employee_id, team_id],
-  );
+    // 2️⃣ Team exists + department
+    const [teamRows] = await conn.execute(
+      "SELECT team_id, department_id FROM team WHERE team_id = ?",
+      [team_id],
+    );
+    if (!teamRows.length) throw new Error("Team not found");
 
-  if (!employeeTeamRows.length) {
-    // Add team lead to the team
-    await pool.execute(
-      "INSERT INTO employee_team (employee_id, team_id) VALUES (?, ?)",
+    const teamDeptId = teamRows[0].department_id;
+
+    // 3️⃣ Get Management department
+    const [managementDept] = await conn.execute(
+      "SELECT department_id FROM department WHERE department_name = 'Management'",
+    );
+    if (!managementDept.length)
+      throw new Error("Management department not found");
+
+    const managementDeptId = managementDept[0].department_id;
+
+    // 4️⃣ Get current active team lead
+    const [currentLeadRows] = await conn.execute(
+      "SELECT employee_id FROM team_lead WHERE team_id = ? AND status = 'Active'",
+      [team_id],
+    );
+
+    const previousLeadId = currentLeadRows.length
+      ? currentLeadRows[0].employee_id
+      : null;
+
+    // 5️⃣ Move NEW lead to Management + TeamLead role
+    await conn.execute(
+      "UPDATE employee SET department_id = ?, role = 'TeamLead' WHERE employee_id = ?",
+      [managementDeptId, employee_id],
+    );
+
+    // 6️⃣ Ensure employee-team mapping
+    const [empTeam] = await conn.execute(
+      "SELECT 1 FROM employee_team WHERE employee_id = ? AND team_id = ?",
       [employee_id, team_id],
     );
+
+    if (!empTeam.length) {
+      await conn.execute(
+        "INSERT INTO employee_team (employee_id, team_id) VALUES (?, ?)",
+        [employee_id, team_id],
+      );
+    }
+
+    // 7️⃣ Deactivate existing team lead
+    await conn.execute(
+      "UPDATE team_lead SET status = 'Inactive' WHERE team_id = ?",
+      [team_id],
+    );
+
+    // 8️⃣ Assign / Activate new team lead (UPDATE if exists, else INSERT)
+    const [leadRow] = await conn.execute(
+      "SELECT team_lead_id FROM team_lead WHERE team_id = ? AND employee_id = ?",
+      [team_id, employee_id],
+    );
+
+    if (leadRow.length) {
+      await conn.execute(
+        "UPDATE team_lead SET status = 'Active' WHERE team_id = ? AND employee_id = ?",
+        [team_id, employee_id],
+      );
+    } else {
+      await conn.execute(
+        "INSERT INTO team_lead (employee_id, team_id, status) VALUES (?, ?, 'Active')",
+        [employee_id, team_id],
+      );
+    }
+
+    // 9️⃣ Revert PREVIOUS team lead (if different)
+    if (previousLeadId && previousLeadId !== employee_id) {
+      await conn.execute(
+        "UPDATE employee SET role = 'Employee', department_id = ? WHERE employee_id = ?",
+        [teamDeptId, previousLeadId],
+      );
+    }
+
+    await conn.commit();
+
+    return {
+      message:
+        "Team lead updated. New lead moved to Management, previous lead reverted to Employee.",
+    };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
   }
-
-  // 4️⃣ Assign / Update team lead
-  const [existingLead] = await pool.execute(
-    "SELECT * FROM team_lead WHERE team_id = ?",
-    [team_id],
-  );
-
-  if (existingLead.length) {
-    await pool.execute(
-      "UPDATE team_lead SET employee_id = ?, status = 'Active' WHERE team_id = ?",
-      [employee_id, team_id],
-    );
-  } else {
-    await pool.execute(
-      "INSERT INTO team_lead (employee_id, team_id, status) VALUES (?, ?, 'Active')",
-      [employee_id, team_id],
-    );
-  }
-
-  return {
-    message: "Team lead assigned successfully and added to team",
-  };
 };
 
 // Get team members by team lead
@@ -215,6 +268,3 @@ export const updateEmployeeProjects = async (data) => {
     message: "Employee projects updated successfully",
   };
 };
-
-
-

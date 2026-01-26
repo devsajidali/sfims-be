@@ -393,15 +393,16 @@ export const getPendingApprovals = async (approver_id) => {
 /**
  * Get employee's assigned assets and status
  */
-export const getEmployeeAssets = async (employee_id, filters = {}) => {
+export const getEmployeeAssets = async (employee_id, status) => {
+  console.log(employee_id, status);
   if (!employee_id) throw new Error("Employee ID required");
 
   const params = [employee_id];
   let where = "ar.requester_id = ?";
 
-  if (filters.status) {
+  if (status) {
     where += " AND ar.request_status = ?";
-    params.push(filters.status); // 'Pending', 'Approved', 'Issued', etc.
+    params.push(status); // 'Pending', 'Approved', 'Issued', etc.
   }
 
   const [rows] = await pool.execute(

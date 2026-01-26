@@ -162,6 +162,8 @@ export const AssetDisabledStatus = Object.freeze({
 
 export const findAll = async (options = {}) => {
   const { error } = findAllOptionsSchema.validate(options);
+
+
   if (error) throw new Error(formatJoiError(error));
   const { page, limit, search, employee_id } = options;
   const params = [];

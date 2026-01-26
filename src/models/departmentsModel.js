@@ -14,6 +14,9 @@ export const findById = async (id) => {
     "SELECT * FROM department WHERE department_id = ?",
     [id],
   );
+  if (!rows?.length) {
+    throw new Error(`Department with id ${id} not found`);
+  }
   return rows[0] || null;
 };
 

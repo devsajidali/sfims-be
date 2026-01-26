@@ -13,5 +13,5 @@ export const getPending = async (approverId) =>
 export const allRequests = async (approverId) =>
   await Assignment.getAllRequests(approverId);
 
-export const employeeAssets = async (approverId) =>
-  await Assignment.getEmployeeAssets(approverId);
+export const employeeAssets = async (employee_id, status) =>
+  await Assignment.getEmployeeAssets(employee_id, status);
